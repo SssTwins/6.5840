@@ -14,16 +14,30 @@ import "strconv"
 // and reply for an RPC.
 //
 
-type ExampleArgs struct {
-	X int
+type RequestArgs struct {
+
+	// 请求类型
+	ReqType ReqType
+
+	TaskId int
 }
 
-type ExampleReply struct {
-	Y int
+type Reply struct {
+
+	// 需要执行的任务类型
+	TaskType CoordinatorState
+
+	TaskId int
+
+	// 文件名称
+	Filename string
+
+	NReduce uint
+
+	Reply bool
 }
 
 // Add your RPC definitions here.
-
 
 // Cook up a unique-ish UNIX-domain socket name
 // in /var/tmp, for the coordinator.
