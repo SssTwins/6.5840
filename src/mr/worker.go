@@ -1,10 +1,12 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"sort"
+	"strconv"
 )
 import "log"
 import "net/rpc"
@@ -12,22 +14,16 @@ import "hash/fnv"
 
 type ByKey []KeyValue
 
-// for sorting by key.
+// Len for sorting by key.
 func (a ByKey) Len() int           { return len(a) }
 func (a ByKey) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 func (a ByKey) Less(i, j int) bool { return a[i].Key < a[j].Key }
 
-// Map functions return a slice of KeyValue.
+// KeyValue Map functions return a slice of KeyValue.
 type KeyValue struct {
 	Key   string
 	Value string
 }
-type WorkerState int
-
-const (
-	WorkerIdle WorkerState = iota
-	WorkerProcess
-)
 
 type mapFunc func(string, string) []KeyValue
 type reduceFunc func(string, []string) string
@@ -56,10 +52,14 @@ func Worker(mapf func(string, string) []KeyValue,
 		mapf:    mapf,
 		reducef: reducef,
 	}
-	reply, _ := w.askTask()
-	if reply.TaskType == Map {
-		var intermediate []KeyValue
-		for _, filename := range os.Args[2:] {
+	for {
+		reply, _ := w.askTask()
+		switch reply.TaskType {
+		case Map:
+			log.Printf("worker 开始处理map任务：%d\n", reply.FileId)
+			// lab提供的map操作
+			var intermediate []KeyValue
+			filename := reply.Filename
 			file, err := os.Open(filename)
 			if err != nil {
 				log.Fatalf("cannot open %v", filename)
@@ -71,42 +71,66 @@ func Worker(mapf func(string, string) []KeyValue,
 			file.Close()
 			kva := w.mapf(filename, string(content))
 			intermediate = append(intermediate, kva...)
-		}
-
-		//
-		// a big difference from real MapReduce is that all the
-		// intermediate data is in one place, intermediate[],
-		// rather than being partitioned into NxM buckets.
-		//
-
-		sort.Sort(ByKey(intermediate))
-
-		oname := "mr-out-0"
-		ofile, _ := os.Create(oname)
-
-		//
-		// call Reduce on each distinct key in intermediate[],
-		// and print the result to mr-out-0.
-		//
-		i := 0
-		for i < len(intermediate) {
-			j := i + 1
-			for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
-				j++
+			// 声明临时文件和编码器
+			outFiles := make([]*os.File, reply.NReduce)
+			outFileEncoders := make([]*json.Encoder, reply.NReduce)
+			// 创建临时文件
+			for i := 0; i < reply.NReduce; i++ {
+				fileName := "mr-twins-out-tmp-" + strconv.Itoa(reply.FileId) + "-" + strconv.Itoa(i)
+				os.Remove(fileName)
+				create, err := os.Create(fileName)
+				if err != nil {
+					log.Fatalf("%v", err)
+				}
+				outFiles[i] = create
+				outFileEncoders[i] = json.NewEncoder(outFiles[i])
 			}
-			values := []string{}
-			for k := i; k < j; k++ {
-				values = append(values, intermediate[k].Value)
+			for _, kv := range intermediate {
+				i := ihash(kv.Key) % reply.NReduce
+				file = outFiles[i]
+				enc := outFileEncoders[i]
+				enc.Encode(&kv)
 			}
-			output := w.reducef(intermediate[i].Key, values)
+			w.submitTask(reply.FileId)
+		case Reduce:
+			var kva []KeyValue
+			for i := 0; i < reply.FileNum; i++ {
+				filePath := "mr-twins-out-tmp-" + strconv.Itoa(i) + "-" + strconv.Itoa(reply.NReduceId)
+				file, _ := os.Open(filePath)
+				dec := json.NewDecoder(file)
+				for {
+					var kv KeyValue
+					if err := dec.Decode(&kv); err != nil {
+						break
+					}
+					kva = append(kva, kv)
+				}
+			}
+			sort.Sort(ByKey(kva))
+			oname := "mr-out-" + strconv.Itoa(reply.NReduceId)
+			ofile, _ := os.Create(oname)
+			i := 0
+			for i < len(kva) {
+				j := i + 1
+				for j < len(kva) && kva[j].Key == kva[i].Key {
+					j++
+				}
+				var values []string
+				for k := i; k < j; k++ {
+					values = append(values, kva[k].Value)
+				}
+				output := reducef(kva[i].Key, values)
 
-			// this is the correct format for each line of Reduce output.
-			fmt.Fprintf(ofile, "%v %v\n", intermediate[i].Key, output)
+				// this is the correct format for each line of Reduce output.
+				fmt.Fprintf(ofile, "%v %v\n", kva[i].Key, output)
+				i = j
+			}
 
-			i = j
+			ofile.Close()
+			w.submitTask(reply.NReduceId)
+		case Done:
+			os.Exit(1)
 		}
-
-		ofile.Close()
 	}
 	os.Exit(1)
 }
@@ -119,6 +143,21 @@ func (w *worker) askTask() (*Reply, error) {
 
 	ok := call("Coordinator.RpcReq", &args, &reply)
 	if ok {
+		return &reply, nil
+	} else {
+		return nil, fmt.Errorf("call failed!\n")
+	}
+}
+
+func (w *worker) submitTask(taskId int) (*Reply, error) {
+	args := RequestArgs{
+		ReqType: Submit,
+		TaskId:  taskId,
+	}
+	reply := Reply{}
+
+	ok := call("Coordinator.RpcReq", &args, &reply)
+	if ok && reply.Reply {
 		return &reply, nil
 	} else {
 		return nil, fmt.Errorf("call failed!\n")

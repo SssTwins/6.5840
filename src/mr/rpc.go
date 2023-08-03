@@ -19,6 +19,7 @@ type RequestArgs struct {
 	// 请求类型
 	ReqType ReqType
 
+	// 完成的任务id，map任务是文件的id，reduce任务是nReduce分片id
 	TaskId int
 }
 
@@ -27,13 +28,22 @@ type Reply struct {
 	// 需要执行的任务类型
 	TaskType CoordinatorState
 
-	TaskId int
+	// 文件id，map任务是文件的id
+	FileId int
+
+	// nReduce分片id
+	NReduceId int
 
 	// 文件名称
 	Filename string
 
-	NReduce uint
+	// reduce分片数
+	NReduce int
 
+	// 文件数
+	FileNum int
+
+	// 提交任务请求的专用返回值
 	Reply bool
 }
 

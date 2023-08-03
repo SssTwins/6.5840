@@ -7,7 +7,7 @@ package main
 //
 
 import (
-	"6.5840/mr"
+	"6.5840-twins/src/mr"
 	"fmt"
 )
 import "plugin"

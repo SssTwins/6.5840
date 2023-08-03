@@ -9,8 +9,10 @@ package main
 // Please do not change this file.
 //
 
-import "6.5840/mr"
-import "time"
+import (
+	"6.5840-twins/src/mr"
+	"time"
+)
 import "os"
 import "fmt"
 

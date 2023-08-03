@@ -6,9 +6,10 @@ package main
 // go build -buildmode=plugin indexer.go
 //
 
-import "fmt"
-import "6.5840/mr"
-
+import (
+	"6.5840-twins/src/mr"
+	"fmt"
+)
 import "strings"
 import "unicode"
 import "sort"

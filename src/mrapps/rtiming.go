@@ -7,8 +7,10 @@ package main
 // go build -buildmode=plugin rtiming.go
 //
 
-import "6.5840/mr"
-import "fmt"
+import (
+	"6.5840-twins/src/mr"
+	"fmt"
+)
 import "os"
 import "syscall"
 import "time"

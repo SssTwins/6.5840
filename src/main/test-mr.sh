@@ -289,7 +289,7 @@ sort mr-out-0 > mr-correct-crash.txt
 rm -f mr-out*
 
 rm -f mr-done
-((maybe_quiet $TIMEOUT2 ../mrcoordinator ../pg*txt); touch mr-done ) &
+( (maybe_quiet $TIMEOUT2 ../mrcoordinator ../pg*txt); touch mr-done ) &
 sleep 1
 
 # start multiple workers

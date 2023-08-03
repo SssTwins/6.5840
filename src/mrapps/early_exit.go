@@ -7,11 +7,10 @@ package main
 //
 
 import (
+	"6.5840-twins/src/mr"
 	"strconv"
 	"strings"
 	"time"
-
-	"6.5840/mr"
 )
 
 // The map function is called once for each file of input.
