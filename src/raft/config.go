@@ -8,9 +8,11 @@ package raft
 // test with the original before submitting.
 //
 
-import "6.5840/labgob"
-import "6.5840/labrpc"
-import "bytes"
+import (
+	"6.5840-twins/src/labgob"
+	"6.5840-twins/src/labrpc"
+	"bytes"
+)
 import "log"
 import "sync"
 import "sync/atomic"
