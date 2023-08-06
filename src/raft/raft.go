@@ -19,8 +19,7 @@ package raft
 
 import (
 	"6.5840-twins/src/labrpc"
-	//	"bytes"
-	"math/rand"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -53,21 +52,82 @@ type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
-	me        int                 // this peer's index into peers[]
-	dead      int32               // set by Kill()
+
+	// this peer's index into peers[] 同时作为raft节点id
+	me int
+
+	// set by Kill()
+	dead int32
 
 	// Your data here (2A, 2B, 2C).
+
+	// raft节点的状态
+	state State
+
+	// 当前节点所处任期
+	currTerm uint64
+
+	// 当前任期投票给了谁，未投票设置为-1
+	votedFor int
+
+	// 当前任期获取的投票数量
+	voteCount int
+
+	applyCh chan ApplyMsg
+
+	// 当前任期的leader peer's index -1表示集群暂未存在leader
+	leader int
+
+	// 超时方法
+	tick func()
+
+	heartbeatTick int
+
+	electionTick int
+
+	randElectionTimeoutTick int
+
+	// 消息通知channel
+	msgCh chan RfMsg
+
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 
+}
+
+type State = uint8
+
+// Raft节点三种状态：Follower、Candidate、Leader
+const (
+	Follower State = iota
+	PreCandidate
+	Candidate
+	Leader
+)
+
+type MsgType uint8
+
+const (
+	// MsgElection 触发选举
+	MsgElection MsgType = iota
+
+	// MsgElectionTimeout 等待选举投票超时
+	MsgElectionTimeout
+
+	// MsgBeElected 当选
+	MsgBeElected
+)
+
+type RfMsg struct {
+	mt MsgType
 }
 
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 
-	var term int
-	var isleader bool
+	var term = int(rf.currTerm)
+	var isleader = rf.state == Leader
 	// Your code here (2A).
 	return term, isleader
 }
@@ -123,17 +183,41 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // field names must start with capital letters!
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	Term        uint64
+	CandidateId int
 }
 
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
 	// Your data here (2A).
+	Term uint64
+	// 回应为true则获得投票
+	Reply bool
 }
 
-// example RequestVote RPC handler.
+// RequestVote example RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (2A, 2B).
+	// 如果Candidate节点term小于follower，或二者term相同但是Candidate节点日志索引小于follower
+	// 说明Candidate节点过时，拒绝投票
+	if args.Term < rf.currTerm || args.Term == rf.currTerm {
+		reply.Term = rf.currTerm
+		reply.Reply = false
+		return
+	}
+
+	// 未投票的话则给请求节点投票
+	if rf.votedFor == -1 {
+		rf.currTerm = args.Term
+		rf.votedFor = args.CandidateId
+		reply.Term = rf.currTerm
+		reply.Reply = true
+		return
+	}
+
+	reply.Term = rf.currTerm
+	reply.Reply = false
+	return
 }
 
 // example code to send a RequestVote RPC to a server.
@@ -214,11 +298,10 @@ func (rf *Raft) ticker() {
 
 		// Your code here (2A)
 		// Check if a leader election should be started.
-
 		// pause for a random amount of time between 50 and 350
 		// milliseconds.
-		ms := 50 + (rand.Int63() % 300)
-		time.Sleep(time.Duration(ms) * time.Millisecond)
+		rf.tick()
+		time.Sleep(time.Duration(5) * time.Millisecond)
 	}
 }
 
@@ -240,11 +323,68 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// Your initialization code here (2A, 2B, 2C).
 
+	// 2A 初始化raft节点状态
+	rf.applyCh = applyCh
+	rf.msgCh = make(chan RfMsg)
+	rf.becomeFollower(0, -1)
+
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
-
+	go rf.loop()
 	// start ticker goroutine to start elections
 	go rf.ticker()
 
 	return rf
+}
+
+func (rf *Raft) loop() {
+	for rf.killed() == false {
+		select {
+		case <-rf.msgCh:
+			msg := <-rf.msgCh
+			switch msg.mt {
+			case MsgElection:
+				rf.doElection()
+			case MsgElectionTimeout:
+				rf.doElectionTimeout()
+			}
+
+		}
+	}
+}
+
+func (rf *Raft) doElection() {
+	var vote = RequestVoteArgs{
+		Term:        rf.currTerm,
+		CandidateId: rf.me,
+	}
+	for i := range rf.peers {
+		go func(i int) {
+			var reply RequestVoteReply
+			// 发送申请到某个节点
+			rf.sendRequestVote(i, &vote, &reply)
+
+			// 如果candidate节点term小于follower节点
+			// 当前candidate节点无效
+			// candidate节点转变为follower节点
+			if reply.Term > rf.currTerm {
+				rf.becomeFollower(reply.Term, -1)
+				return
+			}
+
+			if reply.Reply {
+				rf.voteCount++
+				log.Printf("当前任期: %d, 节点id: %d, 票数: %d", rf.currTerm, rf.me, rf.voteCount)
+				rf.mu.Lock()
+				if rf.state == Candidate && rf.voteCount > len(rf.peers)/2+1 {
+					rf.msgCh <- RfMsg{mt: MsgBeElected}
+				}
+				rf.mu.Unlock()
+			}
+		}(i)
+	}
+}
+
+func (rf *Raft) doElectionTimeout() {
+	rf.becomeFollower(rf.currTerm, -1)
 }
