@@ -386,23 +386,18 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 func (rf *Raft) loop() {
 	for rf.killed() == false {
 		select {
-		case <-rf.msgCh:
-			msg := <-rf.msgCh
+		case msg := <-rf.msgCh:
 			switch msg.mt {
 			case MsgElection:
-				log.Printf("%d 触发选举在term %d", rf.me, rf.currTerm)
 				rf.doElection()
 			case MsgBeElected:
-				log.Printf("%d 选举成功在term %d", rf.me, rf.currTerm)
 				rf.doElected()
 			case MsgElectionTimeout:
-				log.Printf("%d 选举超时在term %d", rf.me, rf.currTerm)
 				rf.doElectionTimeout()
 			case MsgAppendEntries:
 				rf.doSendHeartbeat()
 			case MsgAppendEntriesOk:
 				if rf.state == Follower {
-					log.Printf("%d 接收来自leader: %d 心跳请求成功", rf.me, rf.leader)
 					rf.electionTick = 0
 				} else if rf.state == Candidate {
 					rf.becomeFollower(rf.currTerm, rf.leader)
