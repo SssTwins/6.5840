@@ -81,18 +81,38 @@ type Raft struct {
 	// 超时方法
 	tick func()
 
+	// 心跳计数
 	heartbeatTick int
 
+	// 选举tick计数
 	electionTick int
 
+	// 随机的选举超时计数
 	randElectionTimeoutTick int
+
+	// 心跳超时计数限界
+	heartbeatTickTimeout int
+
+	// 选举超时计数限界
+	electionTickTimeout int
 
 	// 消息通知channel
 	msgCh chan RfMsg
 
-	// Look at the paper's Figure 2 for a description of what
-	// state a Raft server must maintain.
+	// 被提交日志最大索引
+	commitIndex int
 
+	// 已应用到状态机的最大索引
+	lastApply int
+
+	// 对于每一台服务器，发送到该服务器的下一个日志条目的索引（初始值为领导人最后的日志条目的索引+1）
+	nextIndex []int
+
+	// 对于每一台服务器，已知的已经复制到该服务器的最高日志条目的索引（初始值为0，单调递增）
+	matchIndex []int
+
+	// 日志条目
+	log []interface{}
 }
 
 type State = uint8
@@ -116,6 +136,12 @@ const (
 
 	// MsgBeElected 当选
 	MsgBeElected
+
+	// MsgAppendEntries 发送心跳消息
+	MsgAppendEntries
+
+	// MsgAppendEntriesOk 心跳成功消息
+	MsgAppendEntriesOk
 )
 
 type RfMsg struct {
@@ -182,16 +208,27 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 type RequestVoteArgs struct {
-	// Your data here (2A, 2B).
-	Term        uint64
+
+	// 当前任期id
+	Term uint64
+
+	// 请求的候选人id
 	CandidateId int
+
+	// 候选人的最后日志条目的索引值
+	LastLogIndex int
+
+	// 候选人最后日志条目的任期号
+	LastLogTerm int
 }
 
 // example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
-	// Your data here (2A).
+
+	// 当前任期号，以便于候选人去更新自己的任期号
 	Term uint64
+
 	// 回应为true则获得投票
 	Reply bool
 }
@@ -200,13 +237,14 @@ type RequestVoteReply struct {
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// 如果Candidate节点term小于follower，或二者term相同但是Candidate节点日志索引小于follower
 	// 说明Candidate节点过时，拒绝投票
-	if args.Term < rf.currTerm || args.Term == rf.currTerm {
+	if args.Term < rf.currTerm {
 		reply.Term = rf.currTerm
 		reply.Reply = false
 		return
 	}
 
-	// 未投票的话则给请求节点投票
+	// 未投票并且候选人的日志至少和自己一样新，那么就投票给他
+	rf.mu.Lock()
 	if rf.votedFor == -1 {
 		rf.currTerm = args.Term
 		rf.votedFor = args.CandidateId
@@ -214,7 +252,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.Reply = true
 		return
 	}
-
+	rf.mu.Unlock()
 	reply.Term = rf.currTerm
 	reply.Reply = false
 	return
@@ -314,18 +352,26 @@ func (rf *Raft) ticker() {
 // tester or service expects Raft to send ApplyMsg messages.
 // Make() must return quickly, so it should start goroutines
 // for any long-running work.
-func Make(peers []*labrpc.ClientEnd, me int,
-	persister *Persister, applyCh chan ApplyMsg) *Raft {
-	rf := &Raft{}
-	rf.peers = peers
-	rf.persister = persister
-	rf.me = me
+func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan ApplyMsg) *Raft {
+	log.SetFlags(log.Llongfile | log.Lmicroseconds | log.Ldate)
+	rf := &Raft{
+		peers:     peers,
+		persister: persister,
+		me:        me,
+		applyCh:   applyCh,
+		msgCh:     make(chan RfMsg, 100),
+		// 每5ms一次tick计数
+		electionTickTimeout:  30,
+		heartbeatTickTimeout: 20,
+		// 日志索引记录
+		nextIndex:  make([]int, len(peers)),
+		matchIndex: make([]int, len(peers)),
+	}
 
-	// Your initialization code here (2A, 2B, 2C).
-
-	// 2A 初始化raft节点状态
-	rf.applyCh = applyCh
-	rf.msgCh = make(chan RfMsg)
+	for i := range rf.peers {
+		rf.nextIndex[i] = 1
+		rf.matchIndex[i] = 0
+	}
 	rf.becomeFollower(0, -1)
 
 	// initialize from state persisted before a crash
@@ -344,16 +390,30 @@ func (rf *Raft) loop() {
 			msg := <-rf.msgCh
 			switch msg.mt {
 			case MsgElection:
+				log.Printf("%d 触发选举在term %d", rf.me, rf.currTerm)
 				rf.doElection()
+			case MsgBeElected:
+				log.Printf("%d 选举成功在term %d", rf.me, rf.currTerm)
+				rf.doElected()
 			case MsgElectionTimeout:
+				log.Printf("%d 选举超时在term %d", rf.me, rf.currTerm)
 				rf.doElectionTimeout()
+			case MsgAppendEntries:
+				rf.doSendHeartbeat()
+			case MsgAppendEntriesOk:
+				if rf.state == Follower {
+					log.Printf("%d 接收来自leader: %d 心跳请求成功", rf.me, rf.leader)
+					rf.electionTick = 0
+				} else if rf.state == Candidate {
+					rf.becomeFollower(rf.currTerm, rf.leader)
+				}
 			}
-
 		}
 	}
 }
 
 func (rf *Raft) doElection() {
+	rf.becomeCandidate()
 	var vote = RequestVoteArgs{
 		Term:        rf.currTerm,
 		CandidateId: rf.me,
@@ -362,24 +422,26 @@ func (rf *Raft) doElection() {
 		go func(i int) {
 			var reply RequestVoteReply
 			// 发送申请到某个节点
-			rf.sendRequestVote(i, &vote, &reply)
-
-			// 如果candidate节点term小于follower节点
-			// 当前candidate节点无效
-			// candidate节点转变为follower节点
-			if reply.Term > rf.currTerm {
-				rf.becomeFollower(reply.Term, -1)
-				return
-			}
-
-			if reply.Reply {
-				rf.voteCount++
-				log.Printf("当前任期: %d, 节点id: %d, 票数: %d", rf.currTerm, rf.me, rf.voteCount)
-				rf.mu.Lock()
-				if rf.state == Candidate && rf.voteCount > len(rf.peers)/2+1 {
-					rf.msgCh <- RfMsg{mt: MsgBeElected}
+			if rf.sendRequestVote(i, &vote, &reply) {
+				// 如果candidate节点term小于follower节点
+				// 当前candidate节点无效
+				// candidate节点转变为follower节点
+				if reply.Term > rf.currTerm {
+					rf.becomeFollower(reply.Term, -1)
+					return
 				}
-				rf.mu.Unlock()
+
+				if reply.Reply {
+					if rf.state == Leader {
+						return
+					}
+					rf.voteCount++
+					log.Printf("当前任期: %d, 节点id: %d, 票数: %d, 状态: %x,", rf.currTerm, rf.me, rf.voteCount, rf.state)
+					if rf.state == Candidate && rf.voteCount > len(rf.peers)/2+1 {
+						log.Printf("%d 当选leader", rf.me)
+						rf.msgCh <- RfMsg{mt: MsgBeElected}
+					}
+				}
 			}
 		}(i)
 	}
@@ -387,4 +449,28 @@ func (rf *Raft) doElection() {
 
 func (rf *Raft) doElectionTimeout() {
 	rf.becomeFollower(rf.currTerm, -1)
+}
+
+func (rf *Raft) doElected() {
+	rf.becomeLeader()
+	rf.doSendHeartbeat()
+}
+
+func (rf *Raft) doSendHeartbeat() {
+	var args = AppendEntriesArgs{
+		Term:     rf.currTerm,
+		LeaderId: rf.me,
+	}
+	for i := range rf.peers {
+		go func(i int) {
+			var reply AppendEntriesReply
+			// 发送申请到某个节点
+			if rf.sendHeartbeat(i, &args, &reply) {
+				if reply.Term > rf.currTerm {
+					rf.becomeFollower(reply.Term, -1)
+					return
+				}
+			}
+		}(i)
+	}
 }

@@ -2,6 +2,7 @@ package kvraft
 
 import (
 	"6.5840-twins/src/labrpc"
+	"6.5840-twins/src/raft"
 	"testing"
 )
 import "os"
@@ -13,7 +14,6 @@ import "math/rand"
 import "encoding/base64"
 import "sync"
 import "runtime"
-import "6.5840/raft"
 import "fmt"
 import "time"
 import "sync/atomic"

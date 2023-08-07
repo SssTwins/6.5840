@@ -1,9 +1,12 @@
 package raft
 
+import "log"
+
 // follower的选举超时方法，此方法会触发选举
 func (rf *Raft) tickElection() {
 	rf.electionTick++
 	if rf.electionTick >= rf.randElectionTimeoutTick {
+		log.Printf("%d 超时计数: %d, %d  发起选举\n", rf.me, rf.electionTick, rf.randElectionTimeoutTick)
 		rf.electionTick = 0
 		rf.msgCh <- RfMsg{mt: MsgElection}
 	}
@@ -15,6 +18,17 @@ func (rf *Raft) tickElectionTimeout() {
 	if rf.electionTick >= rf.randElectionTimeoutTick {
 		rf.electionTick = 0
 		rf.msgCh <- RfMsg{mt: MsgElectionTimeout}
+	}
+}
+
+func (rf *Raft) tickHeartbeat() {
+	rf.heartbeatTick++
+	if rf.state != Leader {
+		return
+	}
+	if rf.heartbeatTick >= rf.heartbeatTickTimeout {
+		rf.heartbeatTick = 0
+		rf.msgCh <- RfMsg{mt: MsgAppendEntries}
 	}
 }
 

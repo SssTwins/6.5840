@@ -2,3 +2,8 @@ pkg/
 api.key
 .api.key.trimmed
 *-handin.tar.gz
+/.idea/.gitignore
+/.idea/6.5840.iml
+/.idea/modules.xml
+/.idea/remote-targets.xml
+/.idea/vcs.xml
