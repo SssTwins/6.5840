@@ -20,6 +20,7 @@ package raft
 import (
 	"6.5840-twins/src/labrpc"
 	"log"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -252,6 +253,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.Reply = true
 		return
 	}
+	if rf.state == Leader && args.Term > rf.currTerm {
+		log.Printf("%v", rf)
+		rf.becomeFollower(args.Term, -1)
+	}
 	rf.mu.Unlock()
 	reply.Term = rf.currTerm
 	reply.Reply = false
@@ -354,6 +359,7 @@ func (rf *Raft) ticker() {
 // for any long-running work.
 func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan ApplyMsg) *Raft {
 	log.SetFlags(log.Llongfile | log.Lmicroseconds | log.Ldate)
+	log.SetOutput(os.Stderr)
 	rf := &Raft{
 		peers:     peers,
 		persister: persister,
@@ -433,7 +439,6 @@ func (rf *Raft) doElection() {
 					rf.voteCount++
 					log.Printf("当前任期: %d, 节点id: %d, 票数: %d, 状态: %x,", rf.currTerm, rf.me, rf.voteCount, rf.state)
 					if rf.state == Candidate && rf.voteCount > len(rf.peers)/2+1 {
-						log.Printf("%d 当选leader", rf.me)
 						rf.msgCh <- RfMsg{mt: MsgBeElected}
 					}
 				}
@@ -461,6 +466,7 @@ func (rf *Raft) doSendHeartbeat() {
 			var reply AppendEntriesReply
 			// 发送申请到某个节点
 			if rf.sendHeartbeat(i, &args, &reply) {
+				log.Printf("%d 发送心跳请求给 %d", rf.me, i)
 				if reply.Term > rf.currTerm {
 					rf.becomeFollower(reply.Term, -1)
 					return

@@ -3,6 +3,7 @@ package raft
 import (
 	"log"
 	"math/rand"
+	"time"
 )
 
 func (rf *Raft) becomeFollower(term uint64, leader int) {
@@ -42,6 +43,6 @@ func (rf *Raft) becomeLeader() {
 }
 
 func (rf *Raft) restRandElectionTimeoutTick() {
-	r := rand.New(rand.NewSource(int64(rf.me)))
+	r := rand.New(rand.NewSource(time.Now().UnixNano() + int64(rf.me)))
 	rf.randElectionTimeoutTick = rf.electionTickTimeout + r.Intn(rf.electionTickTimeout)
 }

@@ -1,7 +1,5 @@
 package raft
 
-import "log"
-
 type AppendEntriesArgs struct {
 
 	// 当前leader term
@@ -62,6 +60,5 @@ func (rf *Raft) AppendEntries(ae *AppendEntriesArgs, reply *AppendEntriesReply) 
 	rf.leader = ae.LeaderId
 	// 心跳成功，发送消息
 	rf.msgCh <- RfMsg{mt: MsgAppendEntriesOk}
-	log.Printf("%d 接收来自leader: %d 心跳请求成功", rf.me, rf.leader)
 	return
 }
