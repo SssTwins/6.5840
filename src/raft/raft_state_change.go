@@ -3,7 +3,6 @@ package raft
 import (
 	"log"
 	"math/rand"
-	"time"
 )
 
 func (rf *Raft) becomeFollower(term uint64, leader int) {
@@ -38,11 +37,9 @@ func (rf *Raft) becomeLeader() {
 		rf.nextIndex[i] = 1
 		rf.matchIndex[i] = 0
 	}
-
 	log.Printf("%x became leader at term %d", rf.me, rf.currTerm)
 }
 
 func (rf *Raft) restRandElectionTimeoutTick() {
-	r := rand.New(rand.NewSource(time.Now().UnixNano() + int64(rf.me)))
-	rf.randElectionTimeoutTick = rf.electionTickTimeout + r.Intn(rf.electionTickTimeout)
+	rf.randElectionTimeoutTick = rf.electionTickTimeout + rand.Intn(rf.electionTickTimeout)
 }

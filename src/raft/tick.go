@@ -1,5 +1,17 @@
 package raft
 
+import "time"
+
+// ticker 计时器，5ms一次tick
+func (rf *Raft) ticker() {
+	for rf.killed() == false {
+		rf.mu.Lock()
+		rf.tick()
+		rf.mu.Unlock()
+		time.Sleep(time.Duration(5) * time.Millisecond)
+	}
+}
+
 // follower的选举超时方法，此方法会触发选举
 func (rf *Raft) tickElection() {
 	rf.electionTick++

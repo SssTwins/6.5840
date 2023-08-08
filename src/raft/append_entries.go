@@ -30,26 +30,24 @@ type AppendEntriesReply struct {
 	Success bool
 }
 
-func (rf *Raft) sendHeartbeat(index int, ae *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+func (rf *Raft) sendAppendEntries(index int, ae *AppendEntriesArgs, reply *AppendEntriesReply) bool {
 	ok := rf.peers[index].Call("Raft.AppendEntries", ae, reply)
 	return ok
 }
 
 // AppendEntries  rpc method
 func (rf *Raft) AppendEntries(ae *AppendEntriesArgs, reply *AppendEntriesReply) {
-
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	// 如果leader节点term小于follower节点，不做处理并返回
 	if ae.Term < rf.currTerm {
 		reply.Term = rf.currTerm
 		return
 	}
-
 	// 如果leader节点term大于follower节点
 	// 说明 follower 过时，重置follower节点term
 	if ae.Term > rf.currTerm {
-		rf.currTerm = ae.Term
-		rf.state = Follower
-		rf.votedFor = -1
+		rf.becomeFollower(ae.Term, ae.LeaderId)
 	}
 
 	// 将当前follower节点term返回给leader
@@ -61,4 +59,19 @@ func (rf *Raft) AppendEntries(ae *AppendEntriesArgs, reply *AppendEntriesReply) 
 	// 心跳成功，发送消息
 	rf.msgCh <- RfMsg{mt: MsgAppendEntriesOk}
 	return
+}
+
+// sendAppendEntriesAndHandle
+func (rf *Raft) sendAppendEntriesAndHandle(server int, ae *AppendEntriesArgs) {
+	var reply AppendEntriesReply
+	// 发送申请到某个节点
+	ok := rf.sendAppendEntries(server, ae, &reply)
+	if ok {
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
+		if reply.Term > rf.currTerm {
+			rf.becomeFollower(reply.Term, -1)
+			return
+		}
+	}
 }

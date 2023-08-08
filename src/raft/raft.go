@@ -19,11 +19,10 @@ package raft
 
 import (
 	"6.5840-twins/src/labrpc"
+	"io"
 	"log"
-	"os"
 	"sync"
 	"sync/atomic"
-	"time"
 	//	"6.5840/labgob"
 )
 
@@ -149,14 +148,15 @@ type RfMsg struct {
 	mt MsgType
 }
 
-// return currentTerm and whether this server
+// GetState return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
-
-	var term = int(rf.currTerm)
-	var isleader = rf.state == Leader
+	rf.mu.Lock()
+	term := int(rf.currTerm)
+	isLeader := rf.state == Leader
+	rf.mu.Unlock()
 	// Your code here (2A).
-	return term, isleader
+	return term, isLeader
 }
 
 // save Raft's persistent state to stable storage,
@@ -206,95 +206,6 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
-type RequestVoteArgs struct {
-
-	// 当前任期id
-	Term uint64
-
-	// 请求的候选人id
-	CandidateId int
-
-	// 候选人的最后日志条目的索引值
-	LastLogIndex int
-
-	// 候选人最后日志条目的任期号
-	LastLogTerm int
-}
-
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
-type RequestVoteReply struct {
-
-	// 当前任期号，以便于候选人去更新自己的任期号
-	Term uint64
-
-	// 回应为true则获得投票
-	Reply bool
-}
-
-// RequestVote example RPC handler.
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// 如果Candidate节点term小于follower，或二者term相同但是Candidate节点日志索引小于follower
-	// 说明Candidate节点过时，拒绝投票
-	if args.Term < rf.currTerm {
-		reply.Term = rf.currTerm
-		reply.Reply = false
-		return
-	}
-
-	// 未投票并且候选人的日志至少和自己一样新，那么就投票给他
-	rf.mu.Lock()
-	if rf.votedFor == -1 {
-		rf.currTerm = args.Term
-		rf.votedFor = args.CandidateId
-		reply.Term = rf.currTerm
-		reply.Reply = true
-		return
-	}
-	if rf.state == Leader && args.Term > rf.currTerm {
-		log.Printf("%v", rf)
-		rf.becomeFollower(args.Term, -1)
-	}
-	rf.mu.Unlock()
-	reply.Term = rf.currTerm
-	reply.Reply = false
-	return
-}
-
-// example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should
-// pass &reply.
-// the types of the args and reply passed to Call() must be
-// the same as the types of the arguments declared in the
-// handler function (including whether they are pointers).
-//
-// The labrpc package simulates a lossy network, in which servers
-// may be unreachable, and in which requests and replies may be lost.
-// Call() sends a request and waits for a reply. If a reply arrives
-// within a timeout interval, Call() returns true; otherwise
-// Call() returns false. Thus Call() may not return for a while.
-// A false return can be caused by a dead server, a live server that
-// can't be reached, a lost request, or a lost reply.
-//
-// Call() is guaranteed to return (perhaps after a delay) *except* if the
-// handler function on the server side does not return.  Thus there
-// is no need to implement your own timeouts around Call().
-//
-// look at the comments in ../labrpc/labrpc.go for more details.
-//
-// if you're having trouble getting RPC to work, check that you've
-// capitalized all field names in structs passed over RPC, and
-// that the caller passes the address of the reply struct with &, not
-// the struct itself.
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	return ok
-}
-
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
 // server isn't the leader, returns false. otherwise start the
@@ -336,18 +247,6 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func (rf *Raft) ticker() {
-	for rf.killed() == false {
-
-		// Your code here (2A)
-		// Check if a leader election should be started.
-		// pause for a random amount of time between 50 and 350
-		// milliseconds.
-		rf.tick()
-		time.Sleep(time.Duration(5) * time.Millisecond)
-	}
-}
-
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
 // server's port is peers[me]. all the servers' peers[] arrays
@@ -357,9 +256,11 @@ func (rf *Raft) ticker() {
 // tester or service expects Raft to send ApplyMsg messages.
 // Make() must return quickly, so it should start goroutines
 // for any long-running work.
+
 func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan ApplyMsg) *Raft {
 	log.SetFlags(log.Llongfile | log.Lmicroseconds | log.Ldate)
-	log.SetOutput(os.Stderr)
+	//log.SetOutput(os.Stderr)
+	log.SetOutput(io.Discard)
 	rf := &Raft{
 		peers:     peers,
 		persister: persister,
@@ -373,7 +274,6 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 		nextIndex:  make([]int, len(peers)),
 		matchIndex: make([]int, len(peers)),
 	}
-
 	for i := range rf.peers {
 		rf.nextIndex[i] = 1
 		rf.matchIndex[i] = 0
@@ -395,83 +295,16 @@ func (rf *Raft) loop() {
 		case msg := <-rf.msgCh:
 			switch msg.mt {
 			case MsgElection:
-				rf.doElection()
+				rf.electionHandle()
 			case MsgBeElected:
-				rf.doElected()
+				rf.electedHandle()
 			case MsgElectionTimeout:
-				rf.doElectionTimeout()
+				rf.electionTimeoutHandle()
 			case MsgAppendEntries:
-				rf.doSendHeartbeat()
+				rf.sendAppendEntriesHandle()
 			case MsgAppendEntriesOk:
-				if rf.state == Follower {
-					rf.electionTick = 0
-				} else if rf.state == Candidate {
-					rf.becomeFollower(rf.currTerm, rf.leader)
-				}
+				rf.appendEntriesOkHandle()
 			}
 		}
-	}
-}
-
-func (rf *Raft) doElection() {
-	rf.becomeCandidate()
-	var vote = RequestVoteArgs{
-		Term:        rf.currTerm,
-		CandidateId: rf.me,
-	}
-	for i := range rf.peers {
-		go func(i int) {
-			var reply RequestVoteReply
-			// 发送申请到某个节点
-			if rf.sendRequestVote(i, &vote, &reply) {
-				// 如果candidate节点term小于follower节点
-				// 当前candidate节点无效
-				// candidate节点转变为follower节点
-				if reply.Term > rf.currTerm {
-					rf.becomeFollower(reply.Term, -1)
-					return
-				}
-
-				if reply.Reply {
-					if rf.state == Leader {
-						return
-					}
-					rf.voteCount++
-					log.Printf("当前任期: %d, 节点id: %d, 票数: %d, 状态: %x,", rf.currTerm, rf.me, rf.voteCount, rf.state)
-					if rf.state == Candidate && rf.voteCount > len(rf.peers)/2+1 {
-						rf.msgCh <- RfMsg{mt: MsgBeElected}
-					}
-				}
-			}
-		}(i)
-	}
-}
-
-func (rf *Raft) doElectionTimeout() {
-	rf.becomeFollower(rf.currTerm, -1)
-}
-
-func (rf *Raft) doElected() {
-	rf.becomeLeader()
-	rf.doSendHeartbeat()
-}
-
-func (rf *Raft) doSendHeartbeat() {
-	var args = AppendEntriesArgs{
-		Term:     rf.currTerm,
-		LeaderId: rf.me,
-	}
-	for i := range rf.peers {
-		go func(i int) {
-			var reply AppendEntriesReply
-			// 发送申请到某个节点
-			if rf.sendHeartbeat(i, &args, &reply) {
-				log.Printf("%d 发送心跳请求给 %d", rf.me, i)
-				if reply.Term > rf.currTerm {
-					rf.becomeFollower(reply.Term, -1)
-					return
-				}
-			}
-		}(i)
 	}
 }
