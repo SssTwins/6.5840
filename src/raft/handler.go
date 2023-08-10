@@ -31,10 +31,12 @@ func (rf *Raft) electedHandle() {
 }
 
 func (rf *Raft) sendAppendEntriesHandle() {
+	rf.mu.Lock()
 	var args = AppendEntriesArgs{
 		Term:     rf.currTerm,
 		LeaderId: rf.me,
 	}
+	rf.mu.Unlock()
 	for i := range rf.peers {
 		if i == rf.me {
 			// 不发给自己
