@@ -47,6 +47,11 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
+type LogEntry struct {
+	Command interface{}
+	Term    uint64
+}
+
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
@@ -108,11 +113,11 @@ type Raft struct {
 	// 对于每一台服务器，发送到该服务器的下一个日志条目的索引（初始值为领导人最后的日志条目的索引+1）
 	nextIndex []int
 
-	// 对于每一台服务器，已知的已经复制到该服务器的最高日志条目的索引（初始值为0，单调递增）
+	// 对于每一台服务器，已知的已经复制到该服务器的最高日志条目的索引（初始值为-1，单调递增）
 	matchIndex []int
 
 	// 日志条目
-	log []interface{}
+	log []LogEntry
 }
 
 type State = uint8
@@ -219,12 +224,26 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	index := -1
 	term := -1
-	isLeader := true
-
+	isLeader := rf.state == Leader
+	if isLeader {
+		index = len(rf.log)
+		rf.log = append(rf.log, LogEntry{
+			Command: command,
+			Term:    rf.currTerm,
+		})
+		rf.applyCh <- ApplyMsg{
+			CommandValid: true,
+			Command:      command,
+			CommandIndex: len(rf.log) - 1,
+		}
+		term = int(rf.currTerm)
+		rf.msgCh <- RfMsg{mt: MsgAppendEntries}
+	}
 	// Your code here (2B).
-
 	return index, term, isLeader
 }
 
@@ -273,6 +292,9 @@ func Make(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan 
 		// 日志索引记录
 		nextIndex:  make([]int, len(peers)),
 		matchIndex: make([]int, len(peers)),
+		log: []LogEntry{{
+			Term: 0,
+		}},
 	}
 	for i := range rf.peers {
 		rf.nextIndex[i] = 1

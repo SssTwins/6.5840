@@ -15,7 +15,7 @@ type AppendEntriesArgs struct {
 	PrevLogTerm uint64
 
 	// 需要被保存的日志条目（被当做心跳使用时，则日志条目内容为空；为了提高效率可能一次性发送多个）
-	Entries []interface{}
+	Entries []LogEntry
 
 	// 领导人的已知已提交的最高的日志条目的索引
 	LeaderCommit int
@@ -56,6 +56,16 @@ func (rf *Raft) AppendEntries(ae *AppendEntriesArgs, reply *AppendEntriesReply) 
 	reply.Success = true
 	reply.Term = rf.currTerm
 	rf.leader = ae.LeaderId
+	if ae.Entries != nil && len(rf.log)-1 == ae.PrevLogIndex {
+		for _, entry := range ae.Entries {
+			rf.log = append(rf.log, entry)
+			rf.applyCh <- ApplyMsg{
+				CommandValid: true,
+				Command:      entry.Command,
+				CommandIndex: len(rf.log) - 1,
+			}
+		}
+	}
 	// 心跳成功，发送消息
 	rf.msgCh <- RfMsg{mt: MsgAppendEntriesOk}
 	return
@@ -72,6 +82,11 @@ func (rf *Raft) sendAppendEntriesAndHandle(server int, ae *AppendEntriesArgs) {
 		if reply.Term > rf.currTerm {
 			rf.becomeFollower(reply.Term, -1)
 			return
+		}
+		// 不为空说明发送了日志
+		if ae.Entries != nil {
+			rf.matchIndex[server] += len(ae.Entries)
+			rf.nextIndex[server] = rf.matchIndex[server] + 1
 		}
 	}
 }

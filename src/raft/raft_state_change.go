@@ -33,10 +33,6 @@ func (rf *Raft) becomeLeader() {
 	rf.tick = rf.tickHeartbeat
 	rf.restRandElectionTimeoutTick()
 	rf.leader = rf.me
-	for i := range rf.peers {
-		rf.nextIndex[i] = 1
-		rf.matchIndex[i] = 0
-	}
 	log.Printf("%x became leader at term %d", rf.me, rf.currTerm)
 }
 

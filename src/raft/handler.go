@@ -31,17 +31,21 @@ func (rf *Raft) electedHandle() {
 }
 
 func (rf *Raft) sendAppendEntriesHandle() {
-	rf.mu.Lock()
-	var args = AppendEntriesArgs{
-		Term:     rf.currTerm,
-		LeaderId: rf.me,
-	}
-	rf.mu.Unlock()
 	for i := range rf.peers {
 		if i == rf.me {
 			// 不发给自己
 			continue
 		}
+		rf.mu.Lock()
+		var args = AppendEntriesArgs{
+			Term:     rf.currTerm,
+			LeaderId: rf.me,
+		}
+		if len(rf.log) > 0 && rf.matchIndex[i] < len(rf.log)-1 {
+			args.PrevLogIndex = rf.matchIndex[i]
+			args.Entries = rf.log[rf.nextIndex[i]:len(rf.log)]
+		}
+		rf.mu.Unlock()
 		go rf.sendAppendEntriesAndHandle(i, &args)
 	}
 }
